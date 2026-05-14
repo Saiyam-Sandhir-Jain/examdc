@@ -14,7 +14,7 @@ package com.examd.compiler.lexer;
  *   "fast"    → ADJECTIVE
  *
  * For EXAMD:
- *   "[EXAM]"  → BLOCK_HEADER
+ *   "[EXAM]"  → BLOCK_HEADERcd
  *   "title:"  → KEY
  *   "Physics" → VALUE_SCALAR
  *
