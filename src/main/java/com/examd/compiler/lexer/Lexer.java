@@ -1,5 +1,7 @@
 package com.examd.compiler.lexer;
 
+import com.examd.compiler.diagnostics.Diagnostic;
+import com.examd.compiler.diagnostics.DiagnosticCollector;
 import com.examd.compiler.diagnostics.Span;
 
 import java.util.ArrayList;
@@ -92,6 +94,34 @@ import java.util.regex.Pattern;
  * The lexer constantly switches between these states while scanning lines.
  *
  * ───────────────────────────────────────────────────────────────
+ * ERROR RECOVERY
+ * ───────────────────────────────────────────────────────────────
+ *
+ * The lexer never throws. When it finds something wrong, it records
+ * the problem into a DiagnosticCollector and keeps going.
+ *
+ * Why? Because an author with five bad lines in their file should see
+ * all five errors at once, not just the first one. Throwing on the
+ * first error forces a fix-recompile-fix-recompile cycle that gets
+ * tedious fast.
+ *
+ * Recovery strategy per error type:
+ *
+ *   E001 (unterminated string)
+ *     Treat everything after the opening quote as the value and continue.
+ *     The token still gets emitted — it just has raw content instead of
+ *     cleaned content. The author gets the error message without losing
+ *     the rest of the file.
+ *
+ *   E003 (unrecognised line)
+ *     Skip the line entirely, emit a diagnostic, continue with the next.
+ *     The parser may see cascade errors from the missing token, but those
+ *     are easier to interpret than a hard crash.
+ *
+ * After tokenize() returns, call getDiagnostics().hasErrors() to find
+ * out if the token stream is clean enough for the parser to use.
+ *
+ * ───────────────────────────────────────────────────────────────
  * TEAVM NOTE
  * ───────────────────────────────────────────────────────────────
  *
@@ -156,7 +186,7 @@ public final class Lexer {
      *   content: |
      *
      * Group 1 → key
-     * Group 2 → value
+     * Group 2 → value (may be empty, a scalar, or "|")
      */
     private static final Pattern KEY_PATTERN =
         Pattern.compile("^([\\w][\\w_-]*):\\s*(.*)$");
@@ -216,6 +246,15 @@ public final class Lexer {
     private final String[] lines;
 
     /**
+     * Accumulates every error and warning found during lexing.
+     *
+     * Never null — if the caller doesn't supply one, the constructor
+     * creates a fresh internal collector. Call getDiagnostics() after
+     * tokenize() to inspect what was found.
+     */
+    private final DiagnosticCollector diagnostics;
+
+    /**
      * Tokens produced so far.
      *
      * This eventually becomes the parser's input stream.
@@ -244,16 +283,23 @@ public final class Lexer {
      * True immediately after encountering VALUE_PIPE.
      *
      * The first actual content line determines the indentation level
-     * for the entire pipe block.
+     * for the entire pipe block. We can't know what "indented enough"
+     * means until we see that first line.
      */
     private boolean awaitingPipeFirstLine = false;
 
     // ───────────────────────────────────────────────────────────
-    // Constructor
+    // Constructors
     // ───────────────────────────────────────────────────────────
 
     /**
-     * Creates a lexer instance for a source file.
+     * Creates a lexer that feeds errors into an existing collector.
+     *
+     * Use this when you want multiple compiler phases to share the
+     * same collector — so all errors across all phases appear together.
+     *
+     * If diagnostics is null, a fresh internal collector is created.
+     * Lexing still works, you just can't see the errors from outside.
      *
      * I normalize line endings here because Windows/Linux/macOS all
      * handle newlines differently:
@@ -264,13 +310,23 @@ public final class Lexer {
      *
      * Internally the compiler only uses \n.
      */
-    public Lexer(String filename, String source) {
-        this.filename = filename;
-
+    public Lexer(String filename, String source, DiagnosticCollector diagnostics) {
+        this.filename    = filename;
+        this.diagnostics = (diagnostics != null) ? diagnostics : new DiagnosticCollector();
         this.lines = source
             .replace("\r\n", "\n")
             .replace("\r", "\n")
             .split("\n", -1);
+    }
+
+    /**
+     * Convenience constructor — creates its own internal collector.
+     *
+     * Good for tests and one-off usages where you just want the token
+     * list. Call getDiagnostics() afterwards to check for errors.
+     */
+    public Lexer(String filename, String source) {
+        this(filename, source, new DiagnosticCollector());
     }
 
     // ───────────────────────────────────────────────────────────
@@ -278,10 +334,25 @@ public final class Lexer {
     // ───────────────────────────────────────────────────────────
 
     /**
+     * Returns the diagnostic collector for this lexer.
+     *
+     * Always non-null. The right pattern after calling tokenize() is:
+     *
+     *   List<Token> tokens = lexer.tokenize();
+     *   if (lexer.getDiagnostics().hasErrors()) {
+     *       // show errors, skip parser
+     *   }
+     */
+    public DiagnosticCollector getDiagnostics() {
+        return diagnostics;
+    }
+
+    /**
      * Main lexer entry point.
      *
-     * This walks through the source file line-by-line and feeds each
-     * line into processLine().
+     * Walks through the source file line-by-line and feeds each line
+     * into processLine(). Never throws — all errors go into the
+     * DiagnosticCollector.
      *
      * At the very end we always append an EOF token.
      *
@@ -290,18 +361,25 @@ public final class Lexer {
      * Because parsers become dramatically simpler when they can always
      * safely expect a guaranteed "end" token instead of constantly
      * checking array bounds.
+     *
+     * If too many errors accumulated mid-file, we stop early. The
+     * remaining output would just be noise built on broken foundations.
      */
     public List<Token> tokenize() {
 
         for (int i = 0; i < lines.length; i++) {
+
+            if (diagnostics.hasErrors() &&
+                diagnostics.errorCount() >= DiagnosticCollector.MAX_ERRORS) {
+                break;
+            }
+
             processLine(i + 1, lines[i]);
         }
 
-        // If the file ended while inside a list/pipe block,
-        // that's perfectly valid — we just close the state.
-        if (state == State.IN_PIPE || state == State.IN_LIST) {
-            state = State.NORMAL;
-        }
+        // If the file ended while inside a list or pipe block,
+        // that's fine — we just close the state cleanly.
+        state = State.NORMAL;
 
         tokens.add(Token.eof(filename, lines.length + 1));
 
@@ -327,7 +405,7 @@ public final class Lexer {
      * but comments should always win first.
      *
      * Likewise blank lines must be handled before state logic because
-     * blank lines terminate lists + pipe blocks.
+     * blank lines terminate lists and pipe blocks.
      *
      * General flow:
      *
@@ -337,7 +415,7 @@ public final class Lexer {
      *   block header?
      *   list item?
      *   key/value?
-     *   otherwise → error
+     *   otherwise → record error, skip line, keep going
      *
      * Lexer bugs often come from incorrect ordering,
      * which is why this structure is intentionally explicit.
@@ -350,11 +428,8 @@ public final class Lexer {
 
         if (COMMENT_PATTERN.matcher(rawLine).matches()) {
 
-            Span span = Span.line(filename, lineNum, rawLine.length());
-
-            tokens.add(
-                new Token(TokenType.COMMENT, rawLine.trim(), span)
-            );
+            emit(TokenType.COMMENT, rawLine.trim(),
+                 Span.line(filename, lineNum, rawLine.length()));
 
             return;
         }
@@ -365,13 +440,10 @@ public final class Lexer {
 
         if (BLANK_PATTERN.matcher(rawLine).matches()) {
 
-            Span span = Span.point(filename, lineNum, 1);
+            emit(TokenType.BLANK, "",
+                 Span.point(filename, lineNum, 1));
 
-            tokens.add(
-                new Token(TokenType.BLANK, "", span)
-            );
-
-            // Blank lines terminate open blocks.
+            // Blank lines close whatever block was open.
             if (state == State.IN_PIPE || state == State.IN_LIST) {
                 state = State.NORMAL;
             }
@@ -389,48 +461,40 @@ public final class Lexer {
 
             if (awaitingPipeFirstLine) {
 
-                // First line determines base indentation.
                 if (leadingSpaces == 0) {
 
-                    // No indentation means the pipe block is effectively empty.
+                    // No indentation on the first line after | means
+                    // the pipe block is empty. Exit the state and fall
+                    // through so this line gets processed normally.
                     state = State.NORMAL;
                     awaitingPipeFirstLine = false;
 
                 } else {
 
+                    // First indented line — lock in the base indent.
                     pipeBaseIndent = leadingSpaces;
                     awaitingPipeFirstLine = false;
 
-                    String content =
-                        rawLine.substring(pipeBaseIndent);
-
-                    Span span =
-                        Span.line(filename, lineNum, rawLine.length());
-
-                    tokens.add(
-                        new Token(TokenType.INDENT_LINE, content, span)
-                    );
+                    emit(TokenType.INDENT_LINE,
+                         rawLine.substring(pipeBaseIndent),
+                         Span.line(filename, lineNum, rawLine.length()));
 
                     return;
                 }
 
             } else if (leadingSpaces >= pipeBaseIndent) {
 
-                String content =
-                    rawLine.substring(pipeBaseIndent);
-
-                Span span =
-                    Span.line(filename, lineNum, rawLine.length());
-
-                tokens.add(
-                    new Token(TokenType.INDENT_LINE, content, span)
-                );
+                // Still inside the pipe block — indentation holds.
+                emit(TokenType.INDENT_LINE,
+                     rawLine.substring(pipeBaseIndent),
+                     Span.line(filename, lineNum, rawLine.length()));
 
                 return;
 
             } else {
 
-                // Indentation dropped → pipe block ended.
+                // Indentation dropped — pipe block is over.
+                // Fall through and reprocess this line normally.
                 state = State.NORMAL;
             }
         }
@@ -446,21 +510,16 @@ public final class Lexer {
 
             if (listMatcher.matches()) {
 
-                String content =
-                    listMatcher.group(1).trim();
-
-                Span span =
-                    Span.line(filename, lineNum, rawLine.length());
-
-                tokens.add(
-                    new Token(TokenType.LIST_ITEM, content, span)
-                );
+                emit(TokenType.LIST_ITEM,
+                     listMatcher.group(1).trim(),
+                     Span.line(filename, lineNum, rawLine.length()));
 
                 return;
 
             } else {
 
                 // Any non-list line exits list mode.
+                // Fall through and reprocess this line normally.
                 state = State.NORMAL;
             }
         }
@@ -476,15 +535,9 @@ public final class Lexer {
 
             state = State.NORMAL;
 
-            String headerContent =
-                headerMatcher.group(1).trim();
-
-            Span span =
-                Span.line(filename, lineNum, rawLine.length());
-
-            tokens.add(
-                new Token(TokenType.BLOCK_HEADER, headerContent, span)
-            );
+            emit(TokenType.BLOCK_HEADER,
+                 headerMatcher.group(1).trim(),
+                 Span.line(filename, lineNum, rawLine.length()));
 
             return;
         }
@@ -498,15 +551,9 @@ public final class Lexer {
 
         if (listMatcher.matches()) {
 
-            String content =
-                listMatcher.group(1).trim();
-
-            Span span =
-                Span.line(filename, lineNum, rawLine.length());
-
-            tokens.add(
-                new Token(TokenType.LIST_ITEM, content, span)
-            );
+            emit(TokenType.LIST_ITEM,
+                 listMatcher.group(1).trim(),
+                 Span.line(filename, lineNum, rawLine.length()));
 
             state = State.IN_LIST;
 
@@ -522,41 +569,25 @@ public final class Lexer {
 
         if (keyMatcher.matches()) {
 
-            String keyName =
-                keyMatcher.group(1);
+            String keyName  = keyMatcher.group(1);
+            String rawValue = keyMatcher.group(2).trim();
 
-            String rawValue =
-                keyMatcher.group(2).trim();
-
-            Span keySpan =
-                new Span(
-                    filename,
-                    lineNum,
-                    1,
-                    lineNum,
-                    keyName.length()
-                );
-
-            tokens.add(
-                new Token(TokenType.KEY, keyName, keySpan)
+            Span keySpan = new Span(
+                filename, lineNum, 1, lineNum, keyName.length()
             );
+
+            emit(TokenType.KEY, keyName, keySpan);
 
             // ── Pipe Scalar ────────────────────────────────────
 
             if (rawValue.equals("|")) {
 
-                Span pipeSpan =
-                    new Span(
-                        filename,
-                        lineNum,
-                        keyName.length() + 2,
-                        lineNum,
-                        keyName.length() + 3
-                    );
+                int pipeCol = rawLine.indexOf('|', keyName.length());
 
-                tokens.add(
-                    new Token(TokenType.VALUE_PIPE, "|", pipeSpan)
-                );
+                Span pipeSpan =
+                    Span.point(filename, lineNum, pipeCol + 1);
+
+                emit(TokenType.VALUE_PIPE, "|", pipeSpan);
 
                 awaitingPipeFirstLine = true;
                 pipeBaseIndent = 0;
@@ -567,16 +598,12 @@ public final class Lexer {
 
             else if (rawValue.isEmpty()) {
 
-                int valueCol = keyName.length() + 2;
-
+                // Empty value after a key usually means a list follows.
                 Span valueSpan =
-                    Span.point(filename, lineNum, valueCol);
+                    Span.point(filename, lineNum, keyName.length() + 2);
 
-                tokens.add(
-                    new Token(TokenType.VALUE_SCALAR, "", valueSpan)
-                );
+                emit(TokenType.VALUE_SCALAR, "", valueSpan);
 
-                // Often followed by a list block.
                 state = State.IN_LIST;
             }
 
@@ -584,31 +611,19 @@ public final class Lexer {
 
             else {
 
-                int valueCol =
-                    rawLine.indexOf(
-                        rawValue.charAt(0),
-                        keyName.length() + 1
-                    );
+                int valueOffset =
+                    rawLine.indexOf(rawValue.charAt(0), keyName.length() + 1);
 
-                Span valueSpan =
-                    new Span(
-                        filename,
-                        lineNum,
-                        valueCol + 1,
-                        lineNum,
-                        rawLine.length()
-                    );
-
-                String unquotedValue =
-                    stripQuotes(rawValue, lineNum, valueCol);
-
-                tokens.add(
-                    new Token(
-                        TokenType.VALUE_SCALAR,
-                        unquotedValue,
-                        valueSpan
-                    )
+                Span valueSpan = new Span(
+                    filename, lineNum,
+                    valueOffset + 1, lineNum, rawLine.length()
                 );
+
+                // stripQuotes records a diagnostic on bad input instead
+                // of throwing, so lexing continues past this line.
+                String unquoted = stripQuotes(rawValue, lineNum, valueOffset);
+
+                emit(TokenType.VALUE_SCALAR, unquoted, valueSpan);
 
                 state = State.NORMAL;
             }
@@ -620,19 +635,20 @@ public final class Lexer {
         // 7. Unknown Content
         // ───────────────────────────────────────────────────────
 
-        /**
-         * Eventually this will become a recoverable diagnostic system.
-         *
-         * For now we throw immediately because during compiler development
-         * it's usually better to fail fast and see the exact bad input.
-         */
-        Span span =
+        // We record the problem and skip the line.
+        //
+        // The token stream won't have anything for this line, which may
+        // cause the parser to see cascade errors — but that's a lot more
+        // useful than a hard crash with no further information.
+
+        Span errSpan =
             Span.line(filename, lineNum, rawLine.length());
 
-        throw new LexerException(
+        diagnostics.error(
             "E003",
             "Unexpected content: '" + rawLine.trim() + "'",
-            span
+            errSpan,
+            "Lines must be block headers ([BLOCK]), key-value pairs (key: value), or list items (- item)"
         );
     }
 
@@ -641,12 +657,22 @@ public final class Lexer {
     // ───────────────────────────────────────────────────────────
 
     /**
+     * Adds a token to the list.
+     *
+     * A small helper so processLine() doesn't repeat
+     * `tokens.add(new Token(...))` everywhere.
+     */
+    private void emit(TokenType type, String lexeme, Span span) {
+        tokens.add(new Token(type, lexeme, span));
+    }
+
+    /**
      * Counts leading spaces at the beginning of a line.
      *
      * I intentionally only count literal spaces here.
      *
-     * Mixing tabs/spaces in indentation-sensitive syntax becomes painful
-     * very quickly, so EXAMD strongly prefers spaces.
+     * Mixing tabs and spaces in indentation-sensitive syntax becomes
+     * painful very quickly, so EXAMD strongly prefers spaces only.
      */
     private static int countLeadingSpaces(String line) {
 
@@ -671,17 +697,15 @@ public final class Lexer {
      *   'hello'   → hello
      *   physics   → physics
      *
-     * If a quoted string is missing its closing quote,
-     * we throw E001 immediately.
+     * If a quoted string is missing its closing quote, we record an
+     * E001 diagnostic and return whatever came after the opening quote.
+     * That way the token still gets emitted with something reasonable
+     * and lexing continues rather than stopping here.
      *
      * Only minimal escape handling happens here.
-     * More advanced semantic processing belongs later in the compiler.
+     * More advanced semantic processing belongs later in the pipeline.
      */
-    private String stripQuotes(
-        String raw,
-        int lineNum,
-        int col
-    ) {
+    private String stripQuotes(String raw, int lineNum, int col) {
 
         if (raw.isEmpty()) {
             return raw;
@@ -691,33 +715,30 @@ public final class Lexer {
 
         if (first == '"' || first == '\'') {
 
-            if (
-                raw.length() < 2 ||
-                raw.charAt(raw.length() - 1) != first
-            ) {
+            if (raw.length() < 2 || raw.charAt(raw.length() - 1) != first) {
 
-                Span errSpan =
-                    new Span(
-                        filename,
-                        lineNum,
-                        col + 1,
-                        lineNum,
-                        col + raw.length()
-                    );
-
-                throw new LexerException(
-                    "E001",
-                    "Unterminated quoted string: " + raw,
-                    errSpan
+                Span errSpan = new Span(
+                    filename,
+                    lineNum, col + 1,
+                    lineNum, col + raw.length()
                 );
+
+                diagnostics.error(
+                    "E001",
+                    "Unterminated quoted string",
+                    errSpan,
+                    "Close the string with " + first + " on the same line"
+                );
+
+                // Best-effort recovery: return everything after the
+                // opening quote so the token has something sensible in it.
+                return raw.substring(1);
             }
 
-            String inner =
-                raw.substring(1, raw.length() - 1);
+            String inner = raw.substring(1, raw.length() - 1);
 
-            // Minimal escape handling for double quotes.
+            // Minimal escape handling for double-quoted strings.
             if (first == '"') {
-
                 inner = inner
                     .replace("\\\"", "\"")
                     .replace("\\\\", "\\");
