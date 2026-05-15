@@ -3,6 +3,12 @@ package com.examd.compiler.lexer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.examd.compiler.lexer.Lexer;
+import com.examd.compiler.lexer.LexerException;
+import com.examd.compiler.lexer.Token;
+import com.examd.compiler.lexer.TokenType;
+import com.examd.compiler.diagnostics.Diagnostic;
+
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -632,16 +638,13 @@ class LexerTest {
      * downstream parser errors, so failing early is cleaner.
      */
     @Test
-    @DisplayName("Unterminated quoted string throws LexerException E001")
+    @DisplayName("Unterminated quoted string emits E001 diagnostic")
     void testUnterminatedQuote() {
+        Lexer lexer = new Lexer("test.examd", "content: \"unterminated string");
+        lexer.tokenize();
 
-        LexerException ex =
-            assertThrows(
-                LexerException.class,
-                () -> lex("content: \"unterminated string")
-            );
-
-        assertEquals("E001", ex.errorCode);
+        assertTrue(lexer.getDiagnostics().hasErrors());
+        assertEquals("E001", lexer.getDiagnostics().getErrors().get(0).code);
     }
 
     // ───────────────────────────────────────────────────────────
