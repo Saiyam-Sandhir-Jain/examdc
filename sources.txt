@@ -1,0 +1,5 @@
+src/main/java/com/examd/compiler/lexer/Token.java
+src/main/java/com/examd/compiler/lexer/TokenType.java
+src/main/java/com/examd/compiler/lexer/Lexer.java
+src/main/java/com/examd/compiler/lexer/LexerException.java
+src/main/java/com/examd/compiler/diagnostics/Span.java
