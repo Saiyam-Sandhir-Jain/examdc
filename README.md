@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/YOUR_USERNAME/examdc?include_prereleases)](https://github.com/YOUR_USERNAME/examdc/releases)
 [![GitHub Packages](https://img.shields.io/badge/packages-GitHub-blue?logo=github)](https://github.com/YOUR_USERNAME/examdc/packages)
 [![Java 21+](https://img.shields.io/badge/java-21%2B-orange?logo=openjdk)](https://adoptium.net/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 > A production compiler for the **EXAMD domain-specific language** — converts human-readable `.examd` exam definition files into self-contained, offline-capable HTML exam portals.
 
@@ -117,7 +117,7 @@ All phases share a `DiagnosticCollector` that accumulates errors and warnings (E
 
 ### Prerequisites
 
-- Java 11 or higher
+- Java 21 or higher
 - Maven 3.6+
 
 ```bash
