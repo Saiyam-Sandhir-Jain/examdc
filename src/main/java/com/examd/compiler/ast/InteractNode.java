@@ -32,6 +32,8 @@ import java.util.*;
  */
 public final class InteractNode implements AstNode {
 
+    public void accept(AstVisitor v) { v.visitInteract(this); }
+
     public final String type;
 
     /**

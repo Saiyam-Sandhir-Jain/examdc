@@ -26,6 +26,8 @@ import java.util.*;
  */
 public final class ContextNode implements AstNode {
 
+    public void accept(AstVisitor v) { v.visitContext(this); }
+
     /** The identifier after the colon: "RC1" in [CONTEXT: RC1]. */
     public final String id;
 

@@ -8,10 +8,10 @@ package com.examd.compiler.ast;
  * ═══════════════════════════════════════════════════════════════
  *
  * We have 7 node types and will have many operations on the tree:
- *   - Semantic validation (Phase 3)
- *   - Optimization passes (Phase 4)
- *   - HTML code generation (Phase 5)
- *   - JSON export (Phase 5)
+ *   - Semantic validation 
+ *   - Optimization passes 
+ *   - HTML code generation 
+ *   - JSON export 
  *   - Pretty-printing for debug (any time)
  *
  * WITHOUT the Visitor pattern, you'd put all operations on the nodes:
