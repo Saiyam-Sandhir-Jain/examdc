@@ -5,10 +5,6 @@ import com.examd.compiler.diagnostics.Span;
 /**
  * AstNode — the common interface for every node in the ExamdC Abstract Syntax Tree.
  *
- * ═══════════════════════════════════════════════════════════════
- *  WHAT IS AN AST? (The Intuition)
- * ═══════════════════════════════════════════════════════════════
- *
  * After the Lexer runs, we have a flat list of tokens. The list has no
  * visible structure — it's just one token after another. The parser's
  * job is to find the TREE hidden inside that flat list.
@@ -45,23 +41,14 @@ import com.examd.compiler.diagnostics.Span;
  * All AST nodes share one guarantee: they know their Span (where they
  * came from in the source). An interface enforces this contract without
  * forcing all nodes to share a base class. This keeps the hierarchy flat
- * and makes the Visitor pattern easy to add (Day 5).
+ * and makes the Visitor pattern easy to add.
  *
- * VISITOR PATTERN (preview):
- * In Phase 3 (Validator), we'll add an AstVisitor interface so each
- * phase can walk the tree without knowing the node types:
- *
- *   interface AstVisitor {
- *       void visitExam(ExamNode node);
- *       void visitSection(SectionNode node);
- *       void visitQuestion(QuestionNode node);
- *       ...
- *   }
- *
- * Each node implements: void accept(AstVisitor v) { v.visitExam(this); }
- *
- * For now, we define the interface without accept() — we'll add it in
- * Phase 3 when we first need to traverse the tree externally.
+ * VISITOR PATTERN:
+ * Each phase that needs to walk the tree implements AstVisitor and
+ * passes itself to node.accept(). The node calls back with its concrete
+ * type — visitExam(this), visitSection(this), etc. — so Java dispatches
+ * to the right method. accept() is declared here so the compiler enforces
+ * that every node implements it.
  */
 public interface AstNode {
 
@@ -77,6 +64,17 @@ public interface AstNode {
      * Never returns null.
      */
     Span getSpan();
+
+    /**
+     * Accepts a visitor and dispatches to the correct visit method.
+     * Every concrete node implements this as a one-liner:
+     *
+     *   public void accept(AstVisitor v) { v.visitExam(this); }
+     *
+     * Declared here so the compiler enforces it on every node —
+     * a node that forgets accept() won't compile.
+     */
+    void accept(AstVisitor v);
 
     /**
      * Returns the human-readable node kind for debug output.

@@ -31,6 +31,8 @@ import java.util.*;
  */
 public final class EvaluateNode implements AstNode {
 
+    public void accept(AstVisitor v) { v.visitEvaluate(this); }
+
     public final String type;
 
     /**

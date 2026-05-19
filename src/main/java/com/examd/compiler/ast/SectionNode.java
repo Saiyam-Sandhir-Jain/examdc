@@ -28,6 +28,8 @@ import java.util.*;
  */
 public final class SectionNode implements AstNode {
 
+    public void accept(AstVisitor v) { v.visitSection(this); }
+
     /** The section identifier: "A" in [SECTION: A]. May be "" for unnumbered sections. */
     public final String id;
 

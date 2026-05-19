@@ -36,6 +36,7 @@ import java.util.*;
  * produce an ExamNode, it returns null and the pipeline stops.
  */
 public final class ExamNode implements AstNode {
+    public void accept(AstVisitor v) { v.visitExam(this); }
 
     /** Key-value pairs from the [EXAM] block itself. */
     public final Map<String, String> metadata;

@@ -40,6 +40,7 @@ import java.util.*;
  * assume non-null. The Parser does not assume non-null.
  */
 public final class QuestionNode implements AstNode {
+    public void accept(AstVisitor v) { v.visitQuestion(this); }
 
     /** The question identifier: "1" in [Q: 1]. */
     public final String id;

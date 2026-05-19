@@ -27,6 +27,8 @@ import java.util.Map;
  */
 public final class StemNode implements AstNode {
 
+    public void accept(AstVisitor v) { v.visitStem(this); }
+
     /**
      * The stem type string as written in the source.
      * Known values: "text", "image", "audio", "code", "diagram"
