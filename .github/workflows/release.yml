@@ -5,9 +5,11 @@
 #
 # What it does:
 #   1. Builds and tests the project
-#   2. Publishes the JAR to GitHub Packages (Maven registry)
-#   3. Creates a GitHub Release with the standalone JAR attached
-#      and the CHANGELOG section auto-extracted as release notes
+#   2. Creates a GitHub Release with the CHANGELOG section
+#      auto-extracted as release notes
+#
+# GitHub Packages publishing will be added in Phase 5 once
+# the compiler has a Main entry point and produces a JAR.
 #
 # How to trigger a release:
 #   git tag v0.1.0
@@ -19,98 +21,45 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'          # matches v0.1.0, v1.2.3, v2.0.0-rc1, etc.
+      - 'v*'
 
 jobs:
-
-  # ── Job 1: Build, test, publish to GitHub Packages ───────────
-  publish:
-    name: Build & Publish to GitHub Packages
+  release:
+    name: Build & Create GitHub Release
     runs-on: ubuntu-latest
 
-    # Grant write permission to publish packages
     permissions:
-      contents: read
-      packages: write
+      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Set up Java with GitHub Packages server pre-configured.
-      # The `server-id: github` here must match the <id>github</id>
-      # in pom.xml's <distributionManagement> section.
-      - name: Set up JDK 21 with GitHub Packages
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: temurin
-          server-id: github
-          server-username: GITHUB_ACTOR        # injected automatically
-          server-password: GITHUB_TOKEN        # injected automatically
 
       - name: Cache Maven packages
         uses: actions/cache@v4
         with:
           path: ~/.m2/repository
           key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-maven-
-
-      # Strip the leading 'v' from the tag to get the Maven version.
-      # Tag:   v0.1.0   →   Maven version:  0.1.0
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-
-      # Set the Maven project version to match the Git tag.
-      # This keeps pom.xml clean (no hardcoded versions) while
-      # ensuring the published artifact has the correct version.
-      - name: Set Maven version
-        run: mvn --batch-mode versions:set -DnewVersion=${{ steps.version.outputs.VERSION }} -DgenerateBackupPoms=false
+          restore-keys: |
+            ${{ runner.os }}-maven-
 
       - name: Build and test
-        run: mvn --batch-mode --no-transfer-progress package
-
-      # mvn deploy publishes:
-      #   examdc-VERSION.jar          (compiled classes)
-      #   examdc-VERSION-sources.jar  (source code — great for IDE jump-to-source)
-      #   examdc-VERSION-javadoc.jar  (Javadoc)
-      - name: Publish to GitHub Packages
-        run: mvn --batch-mode --no-transfer-progress deploy -DskipTests
-        env:
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Save the standalone JAR for the next job to attach to the Release
-      - name: Upload standalone JAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: examdc-standalone
-          path: target/examdc-*-standalone.jar
-
-  # ── Job 2: Create GitHub Release ─────────────────────────────
-  release:
-    name: Create GitHub Release
-    needs: publish              # only runs if publish job succeeds
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: write           # needed to create the release
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0        # full history needed for changelog extraction
+        run: mvn --batch-mode --no-transfer-progress test
 
       - name: Extract version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
 
-      # Pull the relevant section out of CHANGELOG.md for this version.
-      # The sed command extracts everything between:
-      #   ## [0.1.0]   and the next   ## [
-      # This becomes the release body automatically — no manual copy-paste.
+      # Extracts the relevant section from CHANGELOG.md for this version.
+      # Looks for content between ## [0.1.0] and the next ## [
       - name: Extract changelog section
         id: changelog
         run: |
@@ -120,23 +69,12 @@ jobs:
           echo "$NOTES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Download standalone JAR
-        uses: actions/download-artifact@v4
-        with:
-          name: examdc-standalone
-          path: artifacts/
-
-      # Creates the release on GitHub with:
-      #   - Release name:  ExamdC v0.1.0
-      #   - Body:          the CHANGELOG section for this version
-      #   - Attached file: examdc-VERSION-standalone.jar
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ExamdC v${{ steps.version.outputs.VERSION }}
           body: ${{ steps.changelog.outputs.NOTES }}
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}   # v1.0.0-rc1 → prerelease: true
-          files: artifacts/*.jar
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
