@@ -44,7 +44,7 @@ type: exact
 answer: A
 ```
 
-**ExamdC compiles this into a zero-dependency offline HTML exam portal** — ready to run in any browser, no server needed.
+**ExamdC compiles this into a zero-dependency offline HTML exam portal** — ready to run in any browser, no server needed
 
 ---
 
